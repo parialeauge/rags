@@ -1,0 +1,14 @@
+# Secrets and local credentials — never commit these
+.env
+.env.*
+!.env.example
+**/credentials.json
+**/token.json
+**/client_secret*.json
+
+# Python / local artifacts
+__pycache__/
+*.py[cod]
+.lancedb/
+.venv/
+venv/
