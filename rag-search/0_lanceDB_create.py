@@ -79,12 +79,21 @@ def _load_dotenv() -> None:
     Only sets keys that are not already present in os.environ
     (setdefault), so real shell exports always win.
     """
+    #---------------------------------------------------------------------------
+    # candidates = List of possible paths to the .env file
+    # icandidatest will return all three paths if the .env 
+    # candidates will return as absoolute path if the .env file 
+    #---------------------------------------------------------------------------
     candidates = [
-        Path.cwd() / ".env",
-        Path.cwd().parent / ".env",
+        Path.cwd() / ".env", # Current working directory/.env
+        Path.cwd().parent / ".env", # Parent directory/.env
         Path(__file__).resolve().parents[2] / ".env",  # .../feature-arun/.env
     ]
-    for env_path in candidates:
+    #---------------------------------------------------------------------------
+    # Travers the candidates list and read the .env file
+    # if file found set the environment variables as key-value pairs
+    #---------------------------------------------------------------------------
+    for env_path in candidates: # Iterate over the candidates all 3 paths
         if not env_path.is_file():
             continue
         for line in env_path.read_text().splitlines():
@@ -92,10 +101,9 @@ def _load_dotenv() -> None:
             # Skip blanks, comments, and malformed lines
             if not line or line.startswith("#") or "=" not in line:
                 continue
-            key, value = line.split("=", 1)  # Split only on first '='
+            key, value = line.split("=", 1) # Split only on first '='
             key, value = key.strip(), value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)  # Do not overwrite existing env
-
+            os.environ.setdefault(key, value) # Do not overwrite existing env
 
 @register("hf-inference")
 class HFInferenceEmbeddings(TextEmbeddingFunction):
