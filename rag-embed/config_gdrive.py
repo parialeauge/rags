@@ -4,8 +4,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-CREDENTIALS_FILE = 'credentials.json'
-TOKEN_FILE = 'token.json'
+CREDENTIALS_FILE = 'credentials.json' 
+TOKEN_FILE = 'token.json' 
 
 
 def get_gdrive_service():
@@ -29,9 +29,9 @@ def get_gdrive_service():
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.run_local_server(port=0) 
         with open(TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
-
+    
     from googleapiclient.discovery import build
     return build('drive', 'v3', credentials=creds)
