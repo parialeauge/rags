@@ -146,6 +146,9 @@ class HFInferenceEmbeddings(TextEmbeddingFunction):
                 "HF_TOKEN is not set. Add it to your environment or feature-arun/.env"
             )
 
+        #---------------------------------------------------------------------------
+        # client = InferenceClient(api_key=token)  # Authenticated HF API client
+        #---------------------------------------------------------------------------
         client = InferenceClient(api_key=token)  # Authenticated HF API client
         texts = self.sanitize_input(texts)  # Normalize input to a list of strings
         vectors = []
@@ -184,7 +187,7 @@ def create_lancedb(
     Returns:
         Tuple (db, table): LanceDB connection and table handle.
     """
-    _load_dotenv()  # Ensure HF_TOKEN is available before embedding
+    _load_dotenv()  # Ensure HF_TOKEN is available before embedding -- private
 
     if documents is None:
         documents = DEFAULT_DOCUMENTS
