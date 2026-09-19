@@ -12,3 +12,4 @@ __pycache__/
 .lancedb/
 .venv/
 venv/
+.venv-rag/

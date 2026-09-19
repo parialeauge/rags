@@ -1,0 +1,31 @@
+# Unified deps for all scripts in rag-embeding/
+# Use: conda activate rags && pip install -r requirements.txt
+#
+# Covered by:
+#   1_embeding-basic.py
+#   2_embeding-hybrid.py
+#   3_embeding-hybrid-qdrant.py
+#   4_embeding-hybrid-lancedb.py
+#   5_embeding-hybrid-lancedb_lanchain.py
+#   6_embeding-hybrid-lancedb_lanchain_professional.py
+
+# Core (scripts 1–2, 4–6) — pinned for torch 2.2 on macOS x86_64
+torch>=2.2,<2.3
+sentence-transformers>=3.0,<5
+transformers>=4.41,<5
+numpy>=1.26,<2
+rank_bm25>=0.2.2
+
+# Qdrant hybrid (script 3)
+qdrant-client>=1.9
+fastembed>=0.4
+
+# LanceDB hybrid (scripts 4–6)
+lancedb>=0.17
+tantivy>=0.22
+pandas>=2.0
+
+# LangChain + LanceDB (scripts 5–6)
+langchain-community>=0.3
+langchain-huggingface>=0.1
+langchain-core>=0.3

@@ -30,7 +30,7 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
     Example Output:
         ["word1 word2 ... word500", "word451 word452 ... word950", "word901 ... word1200"]
     """
-    words = text.split()
+    words = text.split() 
     chunks = []
     for i in range(0, len(words), chunk_size - overlap):
         chunks.append(" ".join(words[i:i + chunk_size]))
@@ -76,6 +76,16 @@ def embed_and_store(text: str, source_path: str, target_dir: str) -> int:
         )
         for idx, chunk in enumerate(chunks)
     ]
+    # alternative way to create the data
+    # data = []
+    # for idx, chunk in enumerate(chunks):
+    # item = DocumentSchema(
+    #     id=str(uuid.uuid4()),
+    #     vector_index=start_idx + idx,
+    #     text=chunk,
+    #     source=source_path
+    # )
+    # data.append(item)
 
     if table is None:
         db.create_table(TABLE_NAME, schema=DocumentSchema, data=data)
@@ -83,4 +93,3 @@ def embed_and_store(text: str, source_path: str, target_dir: str) -> int:
         table.add(data)
 
     return len(data)
-    
