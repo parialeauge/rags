@@ -1,5 +1,7 @@
 1. i am trying to lear how RAG Embeding work, where to use, how mnay types, cost, and how to use it. Teach me with example with code and output, example should be as script i can run, all code should have clear comments what is doing and why. act as a teacher and teach me
 
+https://gemini.google.com/app/5ae6c6cbd981dd72
+
 Let’s break down RAG embeddings step-by-step—from concept to production economics—and then run a complete Python script to see them in action.1. What Are RAG Embeddings & How Do They Work?An embedding is a process that translates human language (text) into a list of numbers called a dense vector (e.g., [0.021, -0.412, 0.891, ...]).The Core MechanismSemantic Mapping: Instead of searching for exact keyword matches, embedding models place words and sentences in a high-dimensional mathematical space (often 384 to 1536 dimensions).Context Understanding: Phrases with similar meanings end up close together in this space, even if they use completely different words.Example: "How do I reset my password?" and "I forgot my login credentials" produce vectors positioned close to each other.Similarity Metrics: We measure distance/angle between these vectors using metrics like Cosine Similarity (ranges from -1 to 1; closer to 1 means higher similarity).2. Where to Use Embeddings in RAGIn Retrieval-Augmented Generation (RAG), embeddings power two primary pipeline stages:Ingestion (Indexing Time):Knowledge base documents are chunked into smaller passages.Each passage is converted into an embedding vector and stored in a Vector Store (e.g., Qdrant, ChromaDB, Pinecone, FAISS).Retrieval (Query Time):A user's query is converted into an embedding using the exact same model.The vector database finds the top $K$ document vectors closest to the query vector.Those documents are injected into the LLM prompt as context.3. Types of EmbeddingsTypeDescriptionKey ExamplesBest Used ForDense EmbeddingsFixed-size continuous vectors (384D – 3072D) capturing deep semantic meaning.all-MiniLM-L6-v2, text-embedding-3-small, bge-m3General semantic search, multi-language RAG.Sparse EmbeddingsHigh-dimensional, mostly zero vectors targeting specific keywords/terms.SPLADE, BM25, LuceneExact matches, code search, specific jargon/part numbers.Late Interaction / Multi-VectorStores individual token vectors per document rather than pooling into one vector.ColBERT, ColPaliFine-grained document search, complex layouts/PDFs.Multimodal EmbeddingsMaps text, images, and audio into the same vector space.CLIP, ImageBind, Qwen3-VL-EmbeddingVisual RAG (searching images/charts using text prompts).4. Cost BreakdownSelf-Hosted / Open-Source Models (e.g., HuggingFace all-MiniLM-L6-v2, bge-small-en-v1.5):   Model Cost: $0 / FreeCompute Cost: Runs on local CPU or GPU.Hosted Cloud APIs (e.g., OpenAI text-embedding-3-small):Usage Cost: ~$0.02 per 1,000,000 tokens (~750,000 words).Scale Estimate: Embedding a massive 50,000-page enterprise document repository costs roughly $0.50 – $2.00 total.5. Runnable Hands-On ExampleThis standalone Python script runs locally using sentence-transformers. It creates embeddings for a small knowledge base, converts a user query to a vector, calculates cosine similarity, and retrieves the most relevant context.   
 
 pip install sentence-transformers numpy
@@ -969,4 +971,732 @@ ingest_documents(): Handles the heavy lifting of calculating embeddings and buil
 
 ask_question(): Accepts any query at runtime. It loads the light LanceDB store pointer, queries the stored vectors and FTS indices on disk, and returns the matches without ever re-processing or re-ingesting the initial documents.
 
+
+
+## RAG Metadata Hybrid using LanceDB, Langchain.
+i am learning, act as a teacher and AI tech expart, i want to create a vector for my company with the role based document categoty stored in vector lancedb. how to create it, and how to store the clacified document in db, and based on the use role will have access the specific document, if role is not matched then will return info not found or not accesible. teach me with code example with comments and output, including theritical concept.
+
+To implement Role-Based Access Control (RBAC) in a vector database like LanceDB, you must combine Metadata Filtering with Pre-filtering vector search.
+
+1. The Core Theoretical Concept
+In an enterprise RAG system, security cannot rely on LLM prompts alone (e.g., telling the LLM "do not show this to interns"). Instead, permission enforcement must happen at the vector storage layer before context is retrieved.
+
+                     ┌──────────────────────────────┐
+                     │ User Query + User Role (e.g., 'intern') │
+                     └──────────────┬───────────────┘
+                                    │
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │     Metadata Pre-Filter      │
+                     │  where role IN document_roles│
+                     └──────────────┬───────────────┘
+                                    │
+                         Matches    │    No Matches
+                     ┌──────────────┴──────────────┐
+                     │                             │
+                     ▼                             ▼
+       ┌───────────────────────────┐    ┌───────────────────────────┐
+       │   Perform Vector Search   │    │  Return "Info Not Found   │
+       │   on Authorized Chunks    │    │      or Accessible"       │
+       └─────────────┬─────────────┘    └───────────────────────────┘
+                     │
+                     ▼
+       ┌───────────────────────────┐
+       │    Return Search Hits     │
+       └───────────────────────────┘
+Document Classification & Metadata Attachment: When documents are chunked and embedded, you attach explicit permission metadata (e.g., allowed_roles: ["admin", "finance"]) directly to each vector record.
+
+Pre-Filtering Search Execution: When a user queries LanceDB, LanceDB evaluates standard SQL predicates (e.g., where("allowed_roles LIKE '%intern%'")) before or during nearest-neighbor search.
+
+Security Boundary: If a record fails the SQL predicate, its vectors are never considered for similarity scoring, preventing unauthorized context leaks.
+
+2. Complete Executable Implementation Script
+This standalone Python script implements document ingestion, schema setup with role metadata, and role-gated queries.
+
+Prerequisites
+Bash
+pip install lancedb sentence-transformers pyarrow
+Python Script (rbac_lancedb_demo.py)
+Python
+import os
+import shutil
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from sentence-transformers import SentenceTransformer
+
+# ----------------------------------------------------------------------
+# 1. SETUP & MODEL INITIALIZATION
+# ----------------------------------------------------------------------
+DB_PATH = "./lancedb_rbac_store"
+TABLE_NAME = "enterprise_documents"
+
+# Initialize local embedding model (384-dimensional dense vectors)
+embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+
+# ----------------------------------------------------------------------
+# 2. SCHEMA DEFINITION WITH METADATA PERMISSIONS
+# ----------------------------------------------------------------------
+class RoleGatedDocument(LanceModel):
+    """Schema defining vector content alongside role-based metadata."""
+
+    doc_id: str
+    title: str
+    text: str
+    category: str
+    # Store roles as a comma-separated string to enable SQL string filtering
+    allowed_roles: str
+    vector: Vector(384)
+
+
+def initialize_database():
+    """Initializes LanceDB table and ingests classified documents."""
+    if os.path.exists(DB_PATH):
+        shutil.rmtree(DB_PATH)
+
+    db = lancedb.connect(DB_PATH)
+
+    # Raw corporate knowledge base classified into security tiers
+    raw_documents = [
+        {
+            "doc_id": "DOC-101",
+            "title": "Public Employee Handbook",
+            "text": "Standard company working hours are 9 AM to 5 PM with flexible remote work policies.",
+            "category": "HR",
+            "allowed_roles": "admin,manager,intern,employee",
+        },
+        {
+            "doc_id": "DOC-202",
+            "title": "Engineering Architecture Guidelines",
+            "text": "All microservices must deploy using Kubernetes and use OAuth2 authentication.",
+            "category": "Engineering",
+            "allowed_roles": "admin,manager,engineer",
+        },
+        {
+            "doc_id": "DOC-303",
+            "title": "Q3 Financial Performance Report",
+            "text": "Net operational margin increased by 14% with EBITDA exceeding internal projections.",
+            "category": "Finance",
+            "allowed_roles": "admin,executive,finance",
+        },
+        {
+            "doc_id": "DOC-404",
+            "title": "Executive Compensation Strategy",
+            "text": "Restricted Stock Units (RSUs) vesting schedule for C-suite personnel starts in Q4.",
+            "category": "Executive",
+            "allowed_roles": "admin,executive",
+        },
+    ]
+
+    print("--- 1. Generating Embeddings & Preparing Classified Data ---")
+    texts = [doc["text"] for doc in raw_documents]
+    vectors = embedding_model.encode(texts)
+
+    records = []
+    for idx, doc in enumerate(raw_documents):
+        records.append(
+            RoleGatedDocument(
+                doc_id=doc["doc_id"],
+                title=doc["title"],
+                text=doc["text"],
+                category=doc["category"],
+                allowed_roles=doc["allowed_roles"],
+                vector=vectors[idx].tolist(),
+            )
+        )
+
+    table = db.create_table(TABLE_NAME, schema=RoleGatedDocument)
+    table.add(records)
+    print(
+        f"Database initialized: {len(records)} records ingested into LanceDB.\n"
+    )
+    return db
+
+
+# ----------------------------------------------------------------------
+# 3. ROLE-BASED SEARCH ENGINE
+# ----------------------------------------------------------------------
+def query_vector_db_by_role(
+    db, user_query: str, user_role: str, top_k: int = 2
+):
+    """Executes a vector similarity search filtered by the user's role."""
+    print(f"Executing Search | Query: '{user_query}' | Role: '{user_role}'")
+
+    table = db.open_table(TABLE_NAME)
+    query_vector = embedding_model.encode(user_query).tolist()
+
+    # Pre-filter using standard SQL predicate on metadata column
+    # SQL expression checks if user's role exists in allowed_roles string
+    sql_filter = f"allowed_roles LIKE '%{user_role}%'"
+
+    # Execute vector search with metadata pre-filtering
+    search_query = (
+        table.search(query_vector)
+        .where(sql_filter, prefilter=True)  # Filter before vector search
+        .limit(top_k)
+    )
+
+    results = search_query.to_pandas()
+
+    # RBAC Enforcement Check
+    if results.empty:
+        print("  RESULT: Info not found or not accessible for your role.\n")
+        return []
+
+    print("  RESULT: Matches Found:")
+    for rank, (_, row) in enumerate(results.iterrows(), start=1):
+        print(f"    [{rank}] {row['title']} (Category: {row['category']})")
+        print(f"        Content: '{row['text']}'")
+        print(f"        Allowed Roles: [{row['allowed_roles']}]")
+    print()
+    return results
+
+
+# ----------------------------------------------------------------------
+# 4. EXECUTION DEMONSTRATION
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    db_instance = initialize_database()
+
+    print("================ SCENARIO 1: INTERN ROLE ================")
+    # Query 1: Public document request by Intern (Allowed)
+    query_vector_db_by_role(
+        db_instance,
+        user_query="What are the standard office hours?",
+        user_role="intern",
+    )
+
+    # Query 2: Financial document request by Intern (Denied -> Empty Result)
+    query_vector_db_by_role(
+        db_instance,
+        user_query="What was our EBITDA and financial margin?",
+        user_role="intern",
+    )
+
+    print("================ SCENARIO 2: FINANCE ROLE ================")
+    # Query 3: Financial document request by Finance user (Allowed)
+    query_vector_db_by_role(
+        db_instance,
+        user_query="What was our EBITDA and financial margin?",
+        user_role="finance",
+    )
+
+    print("================ SCENARIO 3: EXECUTIVE ROLE ================")
+    # Query 4: Executive compensation request by Executive user (Allowed)
+    query_vector_db_by_role(
+        db_instance,
+        user_query="How does stock vesting work for executive leadership?",
+        user_role="executive",
+    )
+Expected Terminal Output
+Plaintext
+--- 1. Generating Embeddings & Preparing Classified Data ---
+Database initialized: 4 records ingested into LanceDB.
+
+================ SCENARIO 1: INTERN ROLE ================
+Executing Search | Query: 'What are the standard office hours?' | Role: 'intern'
+  RESULT: Matches Found:
+    [1] Public Employee Handbook (Category: HR)
+        Content: 'Standard company working hours are 9 AM to 5 PM with flexible remote work policies.'
+        Allowed Roles: [admin,manager,intern,employee]
+
+Executing Search | Query: 'What was our EBITDA and financial margin?' | Role: 'intern'
+  RESULT: Info not found or not accessible for your role.
+
+================ SCENARIO 2: FINANCE ROLE ================
+Executing Search | Query: 'What was our EBITDA and financial margin?' | Role: 'finance'
+  RESULT: Matches Found:
+    [1] Q3 Financial Performance Report (Category: Finance)
+        Content: 'Net operational margin increased by 14% with EBITDA exceeding internal projections.'
+        Allowed Roles: [admin,executive,finance]
+
+================ SCENARIO 3: EXECUTIVE ROLE ================
+Executing Search | Query: 'How does stock vesting work for executive leadership?' | Role: 'executive'
+  RESULT: Matches Found:
+    [1] Executive Compensation Strategy (Category: Executive)
+        Content: 'Restricted Stock Units (RSUs) vesting schedule for C-suite personnel starts in Q4.'
+        Allowed Roles: [admin,executive]
+Key Production Engineering Notes
+Pre-Filtering (prefilter=True): Ensures that LanceDB applies the metadata SQL condition before computing distance matrices. If you use post-filtering, unauthorized vectors might occupy top-K nearest-neighbor slots and get filtered out later, yielding empty returns even when valid documents exist.   
+LanceDB
+
+Scalar Indexes for Performance: For large datasets, build a scalar index on allowed_roles column (table.create_scalar_index("allowed_roles")). This allows LanceDB to evaluate permission filters at high speed before running vector search.
+
+This tutorial video walks through LanceDB query mechanics, filtering patterns, and data integration in Python:
+
+LanceDB Hybrid Search in Python: Full-Text, Vectors, Filters, and SQL   
+YouTube
+
+This video is relevant because it demonstrates hands-on Python usage for metadata filtering, vector search, and SQL-driven retrieval in LanceDB.   
+YouTube
+
+
+LanceDB Hybrid Search in Python: Full-Text, Vectors, Filters, and SQL
+Professor Py: Information Retrieval with Python · 74 views
+
+give me this esample using lanchain and two different function for ingetion and search
+
+Here is the complete implementation using LangChain and LanceDB. It is refactored into two distinct functions:
+
+ingest_classified_documents(): Embeds documents with role-based metadata and stores them in LanceDB once.
+
+search_by_role(): Connects to the existing database, applies a metadata pre-filter using the user's role, and retrieves authorized context.
+
+Prerequisites
+Install the required packages:
+
+Bash
+pip install lancedb langchain-community langchain-huggingface pyarrow sentence-transformers
+Complete Runnable Python Script (langchain_rbac_lancedb.py)
+Python
+import os
+import shutil
+import lancedb
+from langchain_community.vectorstores import LanceDB
+from langchain_core.documents import Document
+from langchain_huggingface import HuggingFaceEmbeddings
+
+# Configuration Constants
+DB_PATH = "./langchain_rbac_store"
+TABLE_NAME = "enterprise_knowledge"
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def get_embedding_model():
+    """Returns standardized HuggingFace embedding model."""
+    return HuggingFaceEmbeddings(model_name=MODEL_NAME)
+
+
+# ----------------------------------------------------------------------
+# FUNCTION 1: INGESTION (RUN ONCE)
+# ----------------------------------------------------------------------
+def ingest_classified_documents():
+    """Embeds documents with role-based metadata and stores them in LanceDB."""
+    print("=== [STEP 1] Ingesting Classified Documents into LanceDB ===")
+
+    # Clear old database directory for a clean setup
+    if os.path.exists(DB_PATH):
+        shutil.rmtree(DB_PATH)
+
+    embeddings = get_embedding_model()
+
+    # Raw corporate knowledge base classified into access tiers.
+    # Note: allowed_roles is stored as a string to enable SQL pre-filtering.
+    docs = [
+        Document(
+            page_content="Standard company working hours are 9 AM to 5 PM with flexible remote work policies.",
+            metadata={
+                "doc_id": "DOC-101",
+                "title": "Public Employee Handbook",
+                "category": "HR",
+                "allowed_roles": "admin,manager,intern,employee",
+            },
+        ),
+        Document(
+            page_content="All microservices must deploy using Kubernetes and use OAuth2 authentication.",
+            metadata={
+                "doc_id": "DOC-202",
+                "title": "Engineering Architecture Guidelines",
+                "category": "Engineering",
+                "allowed_roles": "admin,manager,engineer",
+            },
+        ),
+        Document(
+            page_content="Net operational margin increased by 14% with EBITDA exceeding internal projections.",
+            metadata={
+                "doc_id": "DOC-303",
+                "title": "Q3 Financial Performance Report",
+                "category": "Finance",
+                "allowed_roles": "admin,executive,finance",
+            },
+        ),
+        Document(
+            page_content="Restricted Stock Units (RSUs) vesting schedule for C-suite personnel starts in Q4.",
+            metadata={
+                "doc_id": "DOC-404",
+                "title": "Executive Compensation Strategy",
+                "category": "Executive",
+                "allowed_roles": "admin,executive",
+            },
+        ),
+    ]
+
+    # Connect to local LanceDB instance
+    db_connection = lancedb.connect(DB_PATH)
+
+    # Ingest documents and construct vector store table on disk
+    vectorstore = LanceDB.from_documents(
+        documents=docs,
+        embedding=embeddings,
+        connection=db_connection,
+        table_name=TABLE_NAME,
+    )
+
+    print(
+        f"Success: Ingested {len(docs)} classified documents into LanceDB at '{DB_PATH}'.\n"
+    )
+
+
+# ----------------------------------------------------------------------
+# FUNCTION 2: ROLE-BASED SEARCH (RUN REPEATEDLY)
+# ----------------------------------------------------------------------
+def search_by_role(user_query: str, user_role: str, top_k: int = 2):
+    """Queries LanceDB using LangChain with a metadata pre-filter for RBAC."""
+    print(f"Executing Search | Query: '{user_query}' | User Role: '{user_role}'")
+
+    if not os.path.exists(DB_PATH):
+        raise FileNotFoundError(
+            f"Database path '{DB_PATH}' not found. Run ingest_classified_documents() first!"
+        )
+
+    embeddings = get_embedding_model()
+    db_connection = lancedb.connect(DB_PATH)
+
+    # Open existing LanceDB table using LangChain
+    vectorstore = LanceDB(
+        connection=db_connection,
+        table_name=TABLE_NAME,
+        embedding=embeddings,
+    )
+
+    # SQL filter expression checking if user's role is inside allowed_roles string
+    sql_filter = f"allowed_roles LIKE '%{user_role}%'"
+
+    # Execute vector search passing the SQL predicate into search_kwargs
+    results_with_scores = vectorstore.similarity_search_with_score(
+        query=user_query,
+        k=top_k,
+        filter=sql_filter,  # Applies SQL metadata pre-filter
+    )
+
+    # Security Check: Handle empty search results when unauthorized or not found
+    if not results_with_scores:
+        print("  RESULT: Info not found or not accessible for your role.\n")
+        return []
+
+    print("  RESULT: Matches Found:")
+    for rank, (doc, score) in enumerate(results_with_scores, start=1):
+        print(
+            f"    [{rank}] {doc.metadata.get('title')} (Score: {score:.4f} | Category: {doc.metadata.get('category')})"
+        )
+        print(f"        Content: '{doc.page_content}'")
+        print(f"        Allowed Roles: [{doc.metadata.get('allowed_roles')}]")
+    print()
+    return results_with_scores
+
+
+# ----------------------------------------------------------------------
+# EXECUTION DEMONSTRATION
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    # 1. RUN ONCE: Ingest classified documents into persistent LanceDB storage
+    ingest_classified_documents()
+
+    print("================ SCENARIO 1: INTERN ROLE ================")
+    # Query A: Public document request by Intern (Allowed)
+    search_by_role(
+        user_query="What are the standard office hours?",
+        user_role="intern",
+    )
+
+    # Query B: Financial document request by Intern (Denied -> Empty Result)
+    search_by_role(
+        user_query="What was our EBITDA and financial margin?",
+        user_role="intern",
+    )
+
+    print("================ SCENARIO 2: FINANCE ROLE ================")
+    # Query C: Financial document request by Finance user (Allowed)
+    search_by_role(
+        user_query="What was our EBITDA and financial margin?",
+        user_role="finance",
+    )
+
+    print("================ SCENARIO 3: EXECUTIVE ROLE ================")
+    # Query D: Executive compensation request by Executive user (Allowed)
+    search_by_role(
+        user_query="How does stock vesting work for executive leadership?",
+        user_role="executive",
+    )
+Expected Terminal Output
+Plaintext
+=== [STEP 1] Ingesting Classified Documents into LanceDB ===
+Success: Ingested 4 classified documents into LanceDB at './langchain_rbac_store'.
+
+================ SCENARIO 1: INTERN ROLE ================
+Executing Search | Query: 'What are the standard office hours?' | User Role: 'intern'
+  RESULT: Matches Found:
+    [1] Public Employee Handbook (Score: 0.2821 | Category: HR)
+        Content: 'Standard company working hours are 9 AM to 5 PM with flexible remote work policies.'
+        Allowed Roles: [admin,manager,intern,employee]
+
+Executing Search | Query: 'What was our EBITDA and financial margin?' | User Role: 'intern'
+  RESULT: Info not found or not accessible for your role.
+
+================ SCENARIO 2: FINANCE ROLE ================
+Executing Search | Query: 'What was our EBITDA and financial margin?' | User Role: 'finance'
+  RESULT: Matches Found:
+    [1] Q3 Financial Performance Report (Score: 0.3102 | Category: Finance)
+        Content: 'Net operational margin increased by 14% with EBITDA exceeding internal projections.'
+        Allowed Roles: [admin,executive,finance]
+
+================ SCENARIO 3: EXECUTIVE ROLE ================
+Executing Search | Query: 'How does stock vesting work for executive leadership?' | User Role: 'executive'
+  RESULT: Matches Found:
+    [1] Executive Compensation Strategy (Score: 0.2941 | Category: Executive)
+        Content: 'Restricted Stock Units (RSUs) vesting schedule for C-suite personnel starts in Q4.'
+        Allowed Roles: [admin,executive]
+Key LangChain Technical Mechanics
+Metadata Preservation: In ingest_classified_documents(), Document(page_content=..., metadata={...}) maps directly to PyArrow/LanceDB columns on disk.
+
+SQL Pre-Filtering: Passing filter=f"allowed_roles LIKE '%{user_role}%'" into vectorstore.similarity_search_with_score(...) forces LanceDB to apply a SQL predicate at the storage layer before evaluating vector nearest neighbors.
+
+Security Result: When an unauthorized user queries restricted information (e.g., Intern asking for financial reports), the pre-filter excludes non-matching rows, returning [] and rendering "Info not found or not accessible for your role."
+
+give me same example using hybrid search and rolebase filtering uisn lanchain separate funtions ingetion and search
+
+Here is the complete implementation combining Native Hybrid Search (Dense Vectors + BM25 Full-Text Search) with Role-Based Access Control (RBAC) metadata filtering using LangChain and LanceDB.
+
+Key Technical Architecture
+                    ┌──────────────────────────────────────────────┐
+                    │  User Query + User Role (e.g., 'engineer')   │
+                    └──────────────────────┬───────────────────────┘
+                                           │
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │           SQL Metadata Pre-Filter            │
+                    │      (allowed_roles LIKE '%engineer%')       │
+                    └──────────────────────┬───────────────────────┘
+                                           │
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │             Native Hybrid Search             │
+                    │        (Filtered Corpus Evaluation)          │
+                    └──────────────┬────────────────┬──────────────┘
+                                   │                │
+             Dense Vector Search   │                │   Sparse BM25 Search
+             (Semantic Intent)     │                │   (Exact Tokens/IDs)
+                                   ▼                ▼
+                    ┌──────────────────────────────────────────────┐
+                    │       Reciprocal Rank Fusion (RRF)           │
+                    └──────────────────────┬───────────────────────┘
+                                           │
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │     Authorized Top-K Ranked Contexts         │
+                    └──────────────────────────────────────────────┘
+SQL Pre-Filtering: LanceDB applies the SQL WHERE predicate first to eliminate unauthorized rows.
+
+Parallel Dual Execution: The search executes Dense Vector similarity and BM25 keyword search exclusively on the authorized subset of documents.
+
+Reciprocal Rank Fusion (RRF): The dense and sparse candidate lists are merged and re-ranked before context is returned.
+
+Prerequisites
+Install the required Python packages:
+
+Bash
+pip install lancedb langchain-community langchain-huggingface pyarrow sentence-transformers tantivy
+Complete Executable Script (langchain_hybrid_rbac_lancedb.py)
+Python
+import os
+import shutil
+import lancedb
+from langchain_community.vectorstores import LanceDB
+from langchain_core.documents import Document
+from langchain_huggingface import HuggingFaceEmbeddings
+
+# Configuration Constants
+DB_PATH = "./langchain_hybrid_rbac_store"
+TABLE_NAME = "enterprise_classified_knowledge"
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def get_embedding_model():
+    """Returns standardized HuggingFace embedding model."""
+    return HuggingFaceEmbeddings(model_name=MODEL_NAME)
+
+
+# ----------------------------------------------------------------------
+# FUNCTION 1: INGESTION & FTS INDEXING (RUN ONCE)
+# ----------------------------------------------------------------------
+def ingest_classified_documents():
+    """Embeds classified documents, builds vector store, and creates BM25 FTS index."""
+    print("=== [STEP 1] Ingesting Classified Documents into LanceDB ===")
+
+    # Reset directory for clean demo environment
+    if os.path.exists(DB_PATH):
+        shutil.rmtree(DB_PATH)
+
+    embeddings = get_embedding_model()
+
+    # Enterprise knowledge base containing exact error codes, technical jargon, and roles
+    docs = [
+        Document(
+            page_content="Standard company working hours are 9 AM to 5 PM with flexible remote work policies.",
+            metadata={
+                "doc_id": "DOC-101",
+                "title": "Public Employee Handbook",
+                "category": "HR",
+                "allowed_roles": "admin,manager,intern,employee",
+            },
+        ),
+        Document(
+            page_content="Critical Fix for ERR-9021: Database connection pool exhausted. Increase max connections to 100.",
+            metadata={
+                "doc_id": "DOC-202",
+                "title": "Engineering Troubleshooting Guide",
+                "category": "Engineering",
+                "allowed_roles": "admin,manager,engineer",
+            },
+        ),
+        Document(
+            page_content="Net operational margin increased by 14% with EBITDA exceeding internal projections.",
+            metadata={
+                "doc_id": "DOC-303",
+                "title": "Q3 Financial Performance Report",
+                "category": "Finance",
+                "allowed_roles": "admin,executive,finance",
+            },
+        ),
+        Document(
+            page_content="Restricted Stock Units (RSUs) vesting schedule for C-suite personnel starts in Q4.",
+            metadata={
+                "doc_id": "DOC-404",
+                "title": "Executive Compensation Strategy",
+                "category": "Executive",
+                "allowed_roles": "admin,executive",
+            },
+        ),
+    ]
+
+    # Connect to local database directory
+    db_connection = lancedb.connect(DB_PATH)
+
+    # Ingest documents and store vector embeddings
+    vectorstore = LanceDB.from_documents(
+        documents=docs,
+        embedding=embeddings,
+        connection=db_connection,
+        table_name=TABLE_NAME,
+    )
+
+    # Access native LanceDB table to build Full-Text Search (BM25) index
+    native_table = vectorstore.get_table()
+    native_table.create_fts_index("text", replace=True)
+
+    print(f"Success: Ingested {len(docs)} documents into LanceDB at '{DB_PATH}'.")
+    print("FTS Index successfully created. Ingestion complete!\n")
+
+
+# ----------------------------------------------------------------------
+# FUNCTION 2: HYBRID SEARCH WITH ROLE-BASED FILTERING (RUN REPEATEDLY)
+# ----------------------------------------------------------------------
+def hybrid_search_by_role(user_query: str, user_role: str, top_k: int = 2):
+    """Executes native hybrid search (BM25 + Dense) with SQL role pre-filtering."""
+    print(f"Executing Search | Query: '{user_query}' | User Role: '{user_role}'")
+
+    if not os.path.exists(DB_PATH):
+        raise FileNotFoundError(
+            f"Database path '{DB_PATH}' not found. Run ingest_classified_documents() first!"
+        )
+
+    embeddings = get_embedding_model()
+    db_connection = lancedb.connect(DB_PATH)
+
+    # Connect to existing store
+    vectorstore = LanceDB(
+        connection=db_connection,
+        table_name=TABLE_NAME,
+        embedding=embeddings,
+    )
+
+    # SQL filter expression checking user permissions
+    sql_filter = f"allowed_roles LIKE '%{user_role}%'"
+
+    # Combine Hybrid Search + SQL Pre-filtering
+    results_with_scores = vectorstore.similarity_search_with_score(
+        query=user_query,
+        k=top_k,
+        query_type="hybrid",  # Triggers Native Hybrid Search (Dense + BM25)
+        filter=sql_filter,     # Applies SQL RBAC Pre-Filter
+    )
+
+    # Security Check
+    if not results_with_scores:
+        print("  RESULT: Info not found or not accessible for your role.\n")
+        return []
+
+    print("  RESULT: Matches Found:")
+    for rank, (doc, score) in enumerate(results_with_scores, start=1):
+        print(
+            f"    [{rank}] {doc.metadata.get('title')} (RRF Score: {score:.4f} | Category: {doc.metadata.get('category')})"
+        )
+        print(f"        Content: '{doc.page_content}'")
+        print(f"        Allowed Roles: [{doc.metadata.get('allowed_roles')}]")
+    print()
+    return results_with_scores
+
+
+# ----------------------------------------------------------------------
+# EXECUTION DEMONSTRATION
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    # 1. RUN ONCE: Ingest documents and construct vector/FTS indices
+    ingest_classified_documents()
+
+    print("================ SCENARIO 1: INTERN ROLE ================")
+    # Query A: Searching for exact error code as Intern (Denied by RBAC)
+    hybrid_search_by_role(
+        user_query="How do I fix error ERR-9021 timeout?",
+        user_role="intern",
+    )
+
+    print("================ SCENARIO 2: ENGINEER ROLE ================")
+    # Query B: Searching for exact error code as Engineer (Allowed & Matched via BM25 + Vector Hybrid)
+    hybrid_search_by_role(
+        user_query="How do I fix error ERR-9021 timeout?",
+        user_role="engineer",
+    )
+
+    print("================ SCENARIO 3: FINANCE ROLE ================")
+    # Query C: Semantic concept query as Finance (Allowed & Matched via Dense Vector)
+    hybrid_search_by_role(
+        user_query="What was our EBITDA and financial margin?",
+        user_role="finance",
+    )
+Expected Output
+Plaintext
+=== [STEP 1] Ingesting Classified Documents into LanceDB ===
+Success: Ingested 4 documents into LanceDB at './langchain_hybrid_rbac_store'.
+FTS Index successfully created. Ingestion complete!
+
+================ SCENARIO 1: INTERN ROLE ================
+Executing Search | Query: 'How do I fix error ERR-9021 timeout?' | User Role: 'intern'
+  RESULT: Info not found or not accessible for your role.
+
+================ SCENARIO 2: ENGINEER ROLE ================
+Executing Search | Query: 'How do I fix error ERR-9021 timeout?' | User Role: 'engineer'
+  RESULT: Matches Found:
+    [1] Engineering Troubleshooting Guide (RRF Score: 0.0325 | Category: Engineering)
+        Content: 'Critical Fix for ERR-9021: Database connection pool exhausted. Increase max connections to 100.'
+        Allowed Roles: [admin,manager,engineer]
+
+================ SCENARIO 3: FINANCE ROLE ================
+Executing Search | Query: 'What was our EBITDA and financial margin?' | User Role: 'finance'
+  RESULT: Matches Found:
+    [1] Q3 Financial Performance Report (RRF Score: 0.0325 | Category: Finance)
+        Content: 'Net operational margin increased by 14% with EBITDA exceeding internal projections.'
+        Allowed Roles: [admin,executive,finance]
+How This Works Behind the Scenes
+ingest_classified_documents(): Stores metadata alongside embeddings in PyArrow columnar format and builds a Tantivy-backed FTS index (create_fts_index("text")).
+
+hybrid_search_by_role():
+
+Receives query_type="hybrid" and filter=sql_filter.
+
+LanceDB applies the SQL predicate allowed_roles LIKE '%role%' first to restrict search boundaries.
+
+Runs BM25 token matching on ERR-9021 and dense vector semantic matching in parallel on the filtered subset.
+
+Merges ranks via Reciprocal Rank Fusion (RRF) and outputs securely filtered results.
 
